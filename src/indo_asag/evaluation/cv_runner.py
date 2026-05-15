@@ -25,7 +25,12 @@ def run_cv(df: pd.DataFrame, predict_fn: Callable,
     preds = np.zeros(len(df))
     
     for fold, (tr_idx, va_idx) in enumerate(skf.split(df, df["score_bin"])):
-        p = predict_fn(df.iloc[tr_idx], df.iloc[va_idx], fold)
+        import inspect
+        sig = inspect.signature(predict_fn)
+        if "seed" in sig.parameters:
+            p = predict_fn(df.iloc[tr_idx], df.iloc[va_idx], fold, seed=seed)
+        else:
+            p = predict_fn(df.iloc[tr_idx], df.iloc[va_idx], fold)
         preds[va_idx] = np.clip(p, 0, 1)
     
     return preds, evaluate(df["score_norm"].values, preds)
