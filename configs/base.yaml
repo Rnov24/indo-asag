@@ -1,0 +1,34 @@
+# Indo-ASAG Base Configuration
+# Override per-experiment in prelim.yaml / main.yaml
+
+seed: 42
+n_folds: 5
+seeds: [42, 123, 456, 789, 1024]
+
+data:
+  path: "data/processed/dataset_master_autoscoring.parquet"
+  score_column: "score_manual_avg"
+  score_max: 100
+  n_score_bins: 5
+
+model:
+  bert:
+    name: "indobenchmark/indobert-base-p2"
+    max_length: 128
+    epochs: 4
+    batch_size: 16
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    dropout: 0.1
+  svr:
+    kernel: "rbf"
+    C: 10
+    gamma: "scale"
+    epsilon: 0.05
+  ridge:
+    alpha: 1.0
+
+features:
+  tfidf_max_features: 5000
+  sbert_model: "paraphrase-multilingual-MiniLM-L12-v2"
