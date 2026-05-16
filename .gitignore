@@ -9,7 +9,6 @@ build/
 # Data: included (CC BY 4.0 license)
 
 # Results (generated)
-results/prelim/predictions/
 results/main/predictions/
 results/main/figures/
 
