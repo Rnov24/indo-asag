@@ -79,7 +79,7 @@ def run_multi_seed(df: pd.DataFrame, predict_fn: Callable,
 
 
 def run_loqo(df: pd.DataFrame, predict_fn: Callable,
-             question_col: str = "question_id") -> pd.DataFrame:
+             question_col: str = "question_id") -> tuple:
     """Leave-One-Question-Out evaluation for cross-prompt generalization.
     
     Args:
@@ -89,10 +89,14 @@ def run_loqo(df: pd.DataFrame, predict_fn: Callable,
         question_col: Column name for question identifiers.
         
     Returns:
-        DataFrame with per-question metrics (QWK, Pearson, RMSE, MAE, n_test).
+        Tuple of (loqo_metrics_df, full_predictions_array).
+        loqo_metrics_df: DataFrame with per-question metrics.
+        full_predictions_array: np.ndarray of shape (len(df),) with
+            out-of-question predictions for every sample.
     """
     questions = df[question_col].unique()
     results = []
+    full_preds = np.zeros(len(df))
     
     for q in sorted(questions):
         test_mask = df[question_col] == q
@@ -104,6 +108,10 @@ def run_loqo(df: pd.DataFrame, predict_fn: Callable,
         
         preds = predict_fn(train_df, test_df)
         preds = np.clip(preds, 0, 1)
+        
+        # Store predictions at original indices
+        full_preds[test_mask.values] = preds
+        
         metrics = evaluate(test_df["score_norm"].values, preds)
         metrics["question_id"] = q
         metrics["n_test"] = len(test_df)
@@ -116,4 +124,4 @@ def run_loqo(df: pd.DataFrame, predict_fn: Callable,
     std_qwk = loqo_df["QWK"].std()
     print(f"\n  LOQO Mean QWK: {mean_qwk:.4f} +/- {std_qwk:.4f}")
     
-    return loqo_df
+    return loqo_df, full_preds

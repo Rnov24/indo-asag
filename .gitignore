@@ -23,7 +23,8 @@ paper/**/*.synctex.gz
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
-notebooks/*.py
+notebooks/**/*.py
+scratch_refactor.py
 # IDE
 .vscode/
 .idea/
