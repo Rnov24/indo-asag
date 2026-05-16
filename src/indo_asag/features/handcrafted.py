@@ -51,7 +51,7 @@ def get_feature_names(groups: Optional[list[str]] = None) -> list[str]:
     
     Args:
         groups: List of group names (e.g., ["overlap", "sastrawi"]).
-                If None, returns all 12 features.
+                If None, returns all 11 features.
                 
     Returns:
         List of feature column names.
@@ -67,7 +67,7 @@ def get_feature_names(groups: Optional[list[str]] = None) -> list[str]:
 
 
 def _extract_row(ans: str, ref: str) -> dict:
-    """Extract all 12 handcrafted features from a single (answer, reference) pair.
+    """Extract all 11 handcrafted features from a single (answer, reference) pair.
     
     Args:
         ans: Student answer text.
@@ -127,7 +127,7 @@ def extract_features(df: pd.DataFrame,
     
     Args:
         df: DataFrame with answer and reference columns.
-        groups: Feature groups to include (None = all 12 features).
+        groups: Feature groups to include (None = all 11 features).
         ans_col: Column name for student answers.
         ref_col: Column name for reference answers.
         
