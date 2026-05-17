@@ -12,6 +12,13 @@ build/
 results/main/predictions/
 results/main/figures/
 
+# Model weights (terlalu besar untuk GitHub, >100MB/file)
+results/models/*.pt
+checkpoints/
+
+# Embeddings (besar, bisa direproduksi dari Exp 3)
+results/prelim/predictions/*_emb_*.npy
+
 # LaTeX build artifacts
 paper/**/*.aux
 paper/**/*.bbl
