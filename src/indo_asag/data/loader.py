@@ -39,7 +39,7 @@ def load_dataset(path: str, score_col: str = "score_manual_avg",
     # Stratification bins for k-fold
     df["score_bin"] = pd.qcut(df["score_norm"], q=5, labels=False, duplicates="drop")
     
-    print(f"[Data] Loaded {n_raw} → {len(df)} rows (cleaned)")
+    print(f"[Data] Loaded {n_raw} -> {len(df)} rows (cleaned)")
     print(f"[Data] Questions: {df['question_id'].nunique()}, Topics: {df['topic'].nunique()}")
     
     return df

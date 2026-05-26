@@ -111,6 +111,7 @@ def parse_answers(filepath: str, question_id: int) -> pd.DataFrame:
         m1 = row.iloc[4]
         m2 = row.iloc[5]
         m3 = row.iloc[6]
+        rata = row.iloc[13] if len(row) > 13 else np.nan
         
         # Skip rows with missing essential data
         if pd.isna(answer) or pd.isna(student_id):
@@ -131,6 +132,7 @@ def parse_answers(filepath: str, question_id: int) -> pd.DataFrame:
             "score_m1": safe_float(m1),
             "score_m2": safe_float(m2),
             "score_m3": safe_float(m3),
+            "score_excel_avg": safe_float(rata),
         })
     
     return pd.DataFrame(data_rows)
@@ -186,7 +188,8 @@ def build_master_dataset() -> pd.DataFrame:
     
     # Compute average across available raters
     score_cols = ["score_m1", "score_m2", "score_m3"]
-    df["score_manual_avg"] = df[score_cols].mean(axis=1)
+    # Gunakan Rata Manual dari excel secara langsung, dengan mean rater sebagai cadangan
+    df["score_manual_avg"] = df["score_excel_avg"].fillna(df[score_cols].mean(axis=1))
     df["score_manual_std"] = df[score_cols].std(axis=1)
     df["n_raters"] = df[score_cols].notna().sum(axis=1)
     

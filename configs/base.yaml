@@ -18,9 +18,14 @@ model:
     epochs: 4
     batch_size: 16
     learning_rate: 2.0e-5
-    weight_decay: 0.01
+    weight_decay: 0.05
     warmup_ratio: 0.1
-    dropout: 0.1
+    dropout: 0.3
+    llrd_decay: 0.92
+    n_freeze_layers: 6
+    unfreeze_epoch: 2
+    rdrop_alpha: 0.5
+    multi_dropout: 5
   svr:
     kernel: "rbf"
     C: 10

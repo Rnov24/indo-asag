@@ -1,8 +1,49 @@
-"""IndoBERT fine-tuning for regression-based ASAG."""
+"""IndoBERT fine-tuning for regression-based ASAG with robust training support."""
 
 import numpy as np
 
-# Torch imports are deferred to avoid errors when torch is not installed
+# Torch imports are deferred to allow safe imports when torch is not installed
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from transformers import AutoModel
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+
+if TORCH_AVAILABLE:
+    class BertRegressorModule(nn.Module):
+        """Standard PyTorch Module for IndoBERT Regression with Multi-Sample Dropout."""
+        
+        def __init__(self, model_name, dropout=0.1, multi_dropout=None):
+            super().__init__()
+            self.bert = AutoModel.from_pretrained(model_name)
+            self.multi_dropout = multi_dropout
+            
+            if multi_dropout and multi_dropout > 1:
+                self.dropouts = nn.ModuleList([nn.Dropout(dropout) for _ in range(multi_dropout)])
+            else:
+                self.drop = nn.Dropout(dropout)
+                
+            self.head = nn.Linear(self.bert.config.hidden_size, 1)
+
+        def forward(self, ids, mask):
+            out = self.bert(input_ids=ids, attention_mask=mask)
+            cls = out.last_hidden_state[:, 0, :]
+            
+            if self.training and self.multi_dropout and self.multi_dropout > 1:
+                # Average predictions across multiple dropout masks
+                preds = torch.stack([self.head(d(cls)).squeeze(-1) for d in self.dropouts])
+                return preds.mean(dim=0), cls
+            else:
+                drop_fn = getattr(self, 'drop', None)
+                cls_dropped = drop_fn(cls) if drop_fn else cls
+                return self.head(cls_dropped).squeeze(-1), cls
+else:
+    class BertRegressorModule:
+        pass
 
 
 class PairDataset:
@@ -37,44 +78,85 @@ class PairDataset:
 
 
 class BertRegressor:
-    """IndoBERT-based regression model.
+    """IndoBERT-based regression model with robust training extensions.
     
-    Architecture: [CLS] text_a [SEP] text_b [SEP] → Dropout → Linear(768, 1)
-    
-    Also returns [CLS] embeddings for downstream Late Fusion / Naive Concat.
+    Features:
+        - Multi-Sample Dropout
+        - Layer-wise Learning Rate Decay (LLRD)
+        - Gradual Unfreezing (Bottom Layer Freezing)
+        - R-Drop (Consistency Regularization)
     """
     
-    def __init__(self, model_name="indobenchmark/indobert-base-p2", dropout=0.1):
-        import torch
-        from transformers import AutoModel
-        
-        self.torch = torch
-        self._nn_module = type(
-            "BertRegressorModule",
-            (torch.nn.Module,),
-            {
-                "__init__": lambda self_m, name, dp: (
-                    super(type(self_m), self_m).__init__(),
-                    setattr(self_m, "bert", AutoModel.from_pretrained(name)),
-                    setattr(self_m, "drop", torch.nn.Dropout(dp)),
-                    setattr(self_m, "head", torch.nn.Linear(
-                        self_m.bert.config.hidden_size, 1
-                    )),
-                )[-1],
-                "forward": lambda self_m, ids, mask: (
-                    lambda out: (
-                        self_m.head(self_m.drop(out.last_hidden_state[:, 0, :])).squeeze(-1),
-                        out.last_hidden_state[:, 0, :]
-                    )
-                )(self_m.bert(input_ids=ids, attention_mask=mask)),
-            }
-        )
+    def __init__(self, model_name="indobenchmark/indobert-base-p2", dropout=0.1, multi_dropout=None):
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch and/or Transformers must be installed to use BertRegressor.")
         self.model_name = model_name
         self.dropout = dropout
-    
+        self.multi_dropout = multi_dropout
+        
+    def _get_llrd_param_groups(self, model, lr, weight_decay, decay=0.92):
+        """Build parameter groups with LLRD."""
+        no_decay = ["bias", "LayerNorm.weight"]
+        
+        # 1. Regression Head
+        head_params = []
+        for n, p in model.named_parameters():
+            if "head" in n or "drop" in n:
+                head_params.append(p)
+                
+        groups = [
+            {"params": head_params, "lr": lr * 2, "weight_decay": weight_decay}
+        ]
+        
+        # 2. Encoder layers (11 down to 0)
+        for i in range(11, -1, -1):
+            layer_lr = lr * (decay ** (11 - i))
+            
+            decay_group = []
+            nodecay_group = []
+            for n, p in model.bert.encoder.layer[i].named_parameters():
+                if any(nd in n for nd in no_decay):
+                    nodecay_group.append(p)
+                else:
+                    decay_group.append(p)
+                    
+            groups.extend([
+                {"params": decay_group, "lr": layer_lr, "weight_decay": weight_decay},
+                {"params": nodecay_group, "lr": layer_lr, "weight_decay": 0.0}
+            ])
+            
+        # 3. Embeddings
+        embed_lr = lr * (decay ** 12)
+        decay_group = []
+        nodecay_group = []
+        for n, p in model.bert.embeddings.named_parameters():
+            if any(nd in n for nd in no_decay):
+                nodecay_group.append(p)
+            else:
+                decay_group.append(p)
+                
+        groups.extend([
+            {"params": decay_group, "lr": embed_lr, "weight_decay": weight_decay},
+            {"params": nodecay_group, "lr": embed_lr, "weight_decay": 0.0}
+        ])
+        
+        return groups
+
+    def _set_freezing(self, model, n_freeze, freeze=True):
+        """Freeze or unfreeze the first n_freeze layers."""
+        for param in model.bert.embeddings.parameters():
+            param.requires_grad = not freeze
+            
+        for i in range(min(n_freeze, len(model.bert.encoder.layer))):
+            for param in model.bert.encoder.layer[i].parameters():
+                param.requires_grad = not freeze
+
     def train_fold(self, train_df, val_df, fold,
                    text_a_col, text_b_col,
-                   epochs=4, batch_size=16, lr=2e-5, save_path=None):
+                   epochs=4, batch_size=16, lr=2e-5, save_path=None,
+                   weight_decay=0.01, llrd_decay=None,
+                   n_freeze_layers=0, unfreeze_epoch=0,
+                   rdrop_alpha=None):
         """Fine-tune on one fold and return OOF predictions + embeddings.
         
         Args:
@@ -85,7 +167,13 @@ class BertRegressor:
             text_b_col: Column for second text (e.g., "student_answer").
             epochs: Number of training epochs.
             batch_size: Training batch size.
-            lr: Learning rate.
+            lr: Base learning rate.
+            save_path: Path to save the best model weights.
+            weight_decay: Weight decay coefficient.
+            llrd_decay: LLRD decay rate (e.g., 0.92), None to disable.
+            n_freeze_layers: Number of bottom BERT layers to freeze initially.
+            unfreeze_epoch: Epoch index at which to unfreeze bottom layers.
+            rdrop_alpha: R-Drop regularization coefficient (e.g., 0.5), None to disable.
             
         Returns:
             Tuple of (predictions, cls_embeddings) for validation set.
@@ -109,9 +197,20 @@ class BertRegressor:
         tl = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
         vl = DataLoader(val_ds, batch_size=batch_size * 2)
         
-        model = self._nn_module(self.model_name, self.dropout)
+        model = BertRegressorModule(self.model_name, self.dropout, self.multi_dropout)
         model = model.to(device)
-        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+        
+        # Freezing setup
+        if n_freeze_layers > 0:
+            self._set_freezing(model, n_freeze_layers, freeze=True)
+            
+        # Param groups & Optimizer setup
+        if llrd_decay is not None:
+            param_groups = self._get_llrd_param_groups(model, lr, weight_decay, llrd_decay)
+            opt = torch.optim.AdamW(param_groups)
+        else:
+            opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+            
         total_steps = len(tl) * epochs
         sched = get_linear_schedule_with_warmup(opt, int(0.1 * total_steps), total_steps)
         loss_fn = torch.nn.MSELoss()
@@ -122,10 +221,36 @@ class BertRegressor:
         
         for ep in range(epochs):
             model.train()
+            
+            # Gradual Unfreezing check
+            if n_freeze_layers > 0 and ep >= unfreeze_epoch:
+                self._set_freezing(model, n_freeze_layers, freeze=False)
+                # Re-setup optimizer parameters with active grads, if LLRD is enabled we keep decay
+                if llrd_decay is not None:
+                    # Refresh param groups with active requires_grad
+                    param_groups = self._get_llrd_param_groups(model, lr, weight_decay, llrd_decay)
+                    # We preserve state but update param groups
+                    opt.param_groups.clear()
+                    for group in param_groups:
+                        opt.add_param_group(group)
+            
             for b in tl:
                 opt.zero_grad()
-                p, _ = model(b["input_ids"].to(device), b["attention_mask"].to(device))
-                loss = loss_fn(p, b["score"].to(device))
+                ids, mask, scores = b["input_ids"].to(device), b["attention_mask"].to(device), b["score"].to(device)
+                
+                if rdrop_alpha is not None and rdrop_alpha > 0:
+                    # Forward pass 1
+                    p1, _ = model(ids, mask)
+                    # Forward pass 2 (different dropout masks)
+                    p2, _ = model(ids, mask)
+                    
+                    task_loss = (loss_fn(p1, scores) + loss_fn(p2, scores)) / 2.0
+                    consistency_loss = F.mse_loss(p1, p2)
+                    loss = task_loss + rdrop_alpha * consistency_loss
+                else:
+                    p, _ = model(ids, mask)
+                    loss = loss_fn(p, scores)
+                    
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
